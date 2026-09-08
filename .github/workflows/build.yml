@@ -1,0 +1,78 @@
+name: Build Custom Waifu2x-Extension-GUI
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  workflow_dispatch: # Actions 탭에서 수동으로 'Run workflow' 실행 가능
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path "requirements.txt") {
+              pip install -r requirements.txt
+          } else {
+              pip install PyQt5 PyInstaller pillow psutil requests
+          }
+          pip install pyinstaller
+
+      - name: Download Official Release Engines & Models
+        shell: pwsh
+        run: |
+          Write-Host "Fetching latest official release package..."
+          # GitHub API를 통해 최신 공식 릴리스 다운로드 URL 추출
+          $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/AaronFeng753/Waifu2x-Extension-GUI/releases/latest"
+          $asset = $releaseInfo.assets | Where-Object { $_.name -like "*.7z" -or $_.name -like "*.zip" } | Select-Object -First 1
+          
+          if ($null -eq $asset) {
+              Write-Error "Release asset not found."
+              exit 1
+          }
+
+          Write-Host "Downloading: $($asset.browser_download_url)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "official_release.7z"
+
+          Write-Host "Extracting official release..."
+          7z x official_release.7z -o"base_package" -y
+
+      - name: Build Executable with PyInstaller
+        shell: pwsh
+        run: |
+          # main.py 또는 start.py 등 진입점 파일 자동 탐색
+          $entryPoint = if (Test-Path "main.py") { "main.py" } elseif (Test-Path "start.py") { "start.py" } else { "main_window.py" }
+          Write-Host "Building entry point: $entryPoint"
+
+          # UI 수정된 코드로 새 실행 파일 컴파일
+          pyinstaller --noconfirm --onedir --windowed --name "Waifu2x-Extension-GUI" $entryPoint
+
+      - name: Assemble Final Portable Package
+        shell: pwsh
+        run: |
+          Write-Host "Merging custom executable into release structure..."
+          # 압축 해제된 기본 패키지 폴더 경로 찾기
+          $baseDir = Get-ChildItem -Path "base_package" | Where-Object { $_.PSIsContainer } | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $baseDir) { $baseDir = "base_package" }
+
+          # PyInstaller로 빌드된 새 실행 파일 및 의존 dll들을 공식 패키지 폴더에 덮어쓰기
+          Copy-Item -Path "dist/Waifu2x-Extension-GUI/*" -Destination $baseDir -Recurse -Force
+
+          # 최종 결과물 압축
+          Compress-Archive -Path "$baseDir/*" -DestinationPath "Waifu2x-Extension-GUI-Custom.zip"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Waifu2x-Extension-GUI-Custom
+          path: Waifu2x-Extension-GUI-Custom.zip
